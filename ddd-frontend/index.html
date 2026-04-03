@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DDD 防腐层 (Anti-Corruption Layer) 实战演示</title>
+<style>
+  :root {
+    --blue: #3B82F6; --blue-bg: #EFF6FF; --blue-border: #BFDBFE;
+    --green: #10B981; --green-bg: #ECFDF5; --green-border: #A7F3D0;
+    --amber: #F59E0B; --amber-bg: #FFFBEB; --amber-border: #FDE68A;
+    --red: #EF4444; --red-bg: #FEF2F2;
+    --gray: #6B7280; --gray-bg: #F9FAFB; --gray-border: #E5E7EB;
+    --dark: #1F2937; --radius: 10px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, 'Segoe UI', sans-serif; background: #F3F4F6; color: var(--dark); line-height: 1.6; }
+
+  /* Header */
+  .header { background: linear-gradient(135deg, #1E3A5F, #2D5986); color: white; padding: 28px 32px; }
+  .header h1 { font-size: 24px; margin-bottom: 8px; }
+  .header p { opacity: 0.85; font-size: 14px; max-width: 800px; }
+
+  /* Status Bar */
+  .status-bar { display: flex; gap: 20px; padding: 12px 32px; background: white; border-bottom: 1px solid var(--gray-border); font-size: 13px; }
+  .status-item { display: flex; align-items: center; gap: 6px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .status-dot.ok { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status-dot.err { background: var(--red); }
+
+  /* Layout */
+  .main { max-width: 1400px; margin: 0 auto; padding: 24px; }
+  .contexts { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+
+  /* Cards */
+  .card { background: white; border-radius: var(--radius); box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; }
+  .card-header { padding: 14px 20px; font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .card-header .tag { font-size: 11px; font-weight: 400; padding: 2px 8px; border-radius: 10px; opacity: 0.9; }
+  .card-body { padding: 20px; }
+
+  .ctx-user .card-header { background: var(--blue-bg); color: var(--blue); border-bottom: 2px solid var(--blue); }
+  .ctx-user .tag { background: var(--blue-border); }
+  .ctx-order .card-header { background: var(--green-bg); color: var(--green); border-bottom: 2px solid var(--green); }
+  .ctx-order .tag { background: var(--green-border); }
+  .ctx-acl .card-header { background: var(--amber-bg); color: #B45309; border-bottom: 2px solid var(--amber); }
+  .ctx-acl .tag { background: var(--amber-border); }
+
+  /* Forms */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .form-group { display: flex; flex-direction: column; gap: 4px; }
+  .form-group.full { grid-column: 1 / -1; }
+  label { font-size: 12px; color: var(--gray); font-weight: 500; }
+  input, select { padding: 8px 10px; border: 1px solid var(--gray-border); border-radius: 6px; font-size: 13px; outline: none; transition: border 0.2s; }
+  input:focus, select:focus { border-color: var(--blue); }
+  .btn { padding: 8px 18px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+  .btn:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+  .btn:active { transform: translateY(0); }
+  .btn-blue { background: var(--blue); color: white; }
+  .btn-green { background: var(--green); color: white; }
+  .btn-amber { background: var(--amber); color: white; }
+  .btn-sm { padding: 4px 10px; font-size: 11px; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+  /* Lists */
+  .list { margin-top: 16px; }
+  .list-title { font-size: 13px; color: var(--gray); font-weight: 600; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--gray-border); }
+  .list-empty { font-size: 12px; color: #9CA3AF; text-align: center; padding: 20px; }
+  .list-item { background: var(--gray-bg); border: 1px solid var(--gray-border); border-radius: 8px; padding: 12px; margin-bottom: 8px; font-size: 12px; }
+  .list-item .name { font-weight: 600; font-size: 13px; color: var(--dark); }
+  .list-item .meta { color: var(--gray); margin-top: 2px; }
+  .list-item .actions { margin-top: 8px; display: flex; gap: 6px; }
+
+  /* ACL Visualizer */
+  .acl-flow { display: flex; align-items: stretch; gap: 0; margin: 20px 0; position: relative; }
+  .acl-stage { flex: 1; border-radius: var(--radius); padding: 16px; position: relative; }
+  .acl-stage h4 { font-size: 12px; margin-bottom: 10px; text-align: center; }
+  .acl-arrow { display: flex; align-items: center; justify-content: center; width: 60px; flex-shrink: 0; }
+  .acl-arrow svg { width: 40px; height: 40px; }
+  .acl-stage.external { background: var(--blue-bg); border: 1px solid var(--blue-border); }
+  .acl-stage.translator { background: var(--amber-bg); border: 1px solid var(--amber-border); }
+  .acl-stage.internal { background: var(--green-bg); border: 1px solid var(--green-border); }
+
+  /* JSON display */
+  .json-block { font-family: 'Menlo', 'Consolas', monospace; font-size: 11.5px; line-height: 1.7; white-space: pre-wrap; }
+  .json-key { color: #7C3AED; }
+  .json-str { color: #059669; }
+  .json-null { color: #9CA3AF; }
+  .field-keep { background: rgba(16,185,129,0.1); }
+  .field-rename { background: rgba(245,158,11,0.2); border-left: 3px solid var(--amber); padding-left: 6px; }
+  .field-restructure { background: rgba(59,130,246,0.15); border-left: 3px solid var(--blue); padding-left: 6px; }
+  .field-dropped { background: rgba(239,68,68,0.1); text-decoration: line-through; color: var(--red); border-left: 3px solid var(--red); padding-left: 6px; }
+
+  /* Mapping table */
+  .mapping-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 10px 0; }
+  .mapping-table th { background: var(--gray-bg); padding: 8px; text-align: left; font-weight: 600; border-bottom: 2px solid var(--gray-border); }
+  .mapping-table td { padding: 8px; border-bottom: 1px solid var(--gray-border); vertical-align: top; }
+  .mapping-type { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+  .type-KEEP { background: #D1FAE5; color: #065F46; }
+  .type-RENAME { background: #FEF3C7; color: #92400E; }
+  .type-RESTRUCTURE { background: #DBEAFE; color: #1E40AF; }
+  .type-DROPPED { background: #FEE2E2; color: #991B1B; }
+
+  /* Steps animation */
+  .step-indicator { display: flex; gap: 0; margin-bottom: 20px; }
+  .step { flex: 1; text-align: center; padding: 10px 8px; font-size: 11px; font-weight: 600; color: var(--gray); background: var(--gray-bg); border: 1px solid var(--gray-border); position: relative; transition: all 0.4s; }
+  .step:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+  .step:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+  .step.active { color: white; }
+  .step.s1.active { background: var(--blue); border-color: var(--blue); }
+  .step.s2.active { background: var(--amber); border-color: var(--amber); }
+  .step.s3.active { background: var(--green); border-color: var(--green); }
+  .step .step-num { display: block; font-size: 16px; margin-bottom: 2px; }
+
+  /* Annotations */
+  .annotation { background: #FEF9C3; border: 1px solid #FDE047; border-radius: 6px; padding: 10px 14px; font-size: 12px; margin: 12px 0; line-height: 1.7; }
+  .annotation strong { color: #92400E; }
+
+  /* Fade in */
+  .fade-in { animation: fadeIn 0.5s ease-in; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+  .hidden { display: none; }
+  .toast { position: fixed; bottom: 24px; right: 24px; padding: 10px 20px; border-radius: 8px; color: white; font-size: 13px; z-index: 100; animation: slideUp 0.3s ease; }
+  .toast.success { background: var(--green); }
+  .toast.error { background: var(--red); }
+  @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+  /* Architecture diagram */
+  .arch-diagram { font-family: 'Menlo', 'Consolas', monospace; font-size: 11px; line-height: 1.5; background: #1E293B; color: #E2E8F0; padding: 20px; border-radius: var(--radius); white-space: pre; overflow-x: auto; }
+  .arch-diagram .hl-blue { color: #60A5FA; }
+  .arch-diagram .hl-green { color: #34D399; }
+  .arch-diagram .hl-amber { color: #FBBF24; }
+  .arch-diagram .hl-red { color: #F87171; }
+  .arch-diagram .hl-dim { color: #64748B; }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 12px 0; font-size: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-color { width: 12px; height: 12px; border-radius: 3px; }
+
+  .section-title { font-size: 18px; font-weight: 700; margin: 24px 0 12px; color: var(--dark); }
+
+  @media (max-width: 900px) {
+    .contexts { grid-template-columns: 1fr; }
+    .acl-flow { flex-direction: column; }
+    .acl-arrow { width: auto; height: 40px; transform: rotate(90deg); }
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <h1>DDD 防腐层 (Anti-Corruption Layer) 实战演示</h1>
+  <p>通过两个微服务的真实交互，理解 DDD 中防腐层如何在限界上下文之间翻译模型、保护领域纯净性。先创建用户，再创建订单，观察 ACL 的翻译过程。</p>
+</div>
+
+<!-- Status Bar -->
+<div class="status-bar">
+  <div class="status-item">
+    <div class="status-dot" id="userStatus"></div>
+    <span>User Service (:8082)</span>
+  </div>
+  <div class="status-item">
+    <div class="status-dot" id="orderStatus"></div>
+    <span>Order Service (:8081)</span>
+  </div>
+  <div class="status-item" style="margin-left:auto; color:var(--gray); font-size:12px;">
+    两个服务都启动后才能使用
+  </div>
+</div>
+
+<div class="main">
+
+<!-- Two Bounded Contexts -->
+<div class="contexts">
+
+  <!-- User Service (Bounded Context 1) -->
+  <div class="card ctx-user">
+    <div class="card-header">
+      User Service — 用户限界上下文
+      <span class="tag">:8082</span>
+    </div>
+    <div class="card-body">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>姓名 (name)</label>
+          <input id="userName" value="张三" placeholder="用户名">
+        </div>
+        <div class="form-group">
+          <label>邮箱 (email)</label>
+          <input id="userEmail" value="zhangsan@example.com" placeholder="邮箱">
+        </div>
+        <div class="form-group">
+          <label>街道 (street)</label>
+          <input id="userStreet" value="中关村大街1号" placeholder="街道">
+        </div>
+        <div class="form-group">
+          <label>城市 (city)</label>
+          <input id="userCity" value="北京" placeholder="城市">
+        </div>
+        <div class="form-group">
+          <label>省份 (province)</label>
+          <input id="userProvince" value="北京市" placeholder="省份">
+        </div>
+        <div class="form-group">
+          <label>邮编 (zipCode)</label>
+          <input id="userZip" value="100080" placeholder="邮编">
+        </div>
+        <div class="form-group">
+          <label>国家 (country)</label>
+          <input id="userCountry" value="China" placeholder="国家">
+        </div>
+        <div class="form-group" style="justify-content:flex-end;">
+          <button class="btn btn-blue" onclick="createUser()">创建用户</button>
+        </div>
+      </div>
+
+      <div class="list">
+        <div class="list-title">已创建用户 (User 聚合根)</div>
+        <div id="userList"><div class="list-empty">暂无用户，请先创建</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Order Service (Bounded Context 2) -->
+  <div class="card ctx-order">
+    <div class="card-header">
+      Order Service — 订单限界上下文
+      <span class="tag">:8081</span>
+    </div>
+    <div class="card-body">
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>选择客户 (customerId) — 触发 ACL 调用</label>
+          <select id="orderCustomer">
+            <option value="">-- 请先创建用户 --</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>商品名称</label>
+          <input id="prodName" value="MacBook Pro" placeholder="商品名">
+        </div>
+        <div class="form-group">
+          <label>商品ID</label>
+          <input id="prodId" value="PROD-001" placeholder="商品ID">
+        </div>
+        <div class="form-group">
+          <label>单价</label>
+          <input id="prodPrice" type="number" value="12999" placeholder="价格">
+        </div>
+        <div class="form-group">
+          <label>数量</label>
+          <input id="prodQty" type="number" value="1" placeholder="数量">
+        </div>
+        <div class="form-group full" style="align-items:flex-end;">
+          <button class="btn btn-green" onclick="createOrder()">创建订单（触发 ACL）</button>
+        </div>
+      </div>
+
+      <div class="list">
+        <div class="list-title">订单列表 (Order 聚合根)</div>
+        <div id="orderList"><div class="list-empty">暂无订单</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ACL Translation Visualizer -->
+<div class="card ctx-acl" id="aclSection">
+  <div class="card-header">
+    防腐层 (ACL) 翻译过程可视化
+    <span class="tag">Anti-Corruption Layer</span>
+  </div>
+  <div class="card-body">
+    <div id="aclEmpty" class="list-empty" style="padding:40px;">
+      创建订单后，此处将展示 ACL 如何将 User Service 的外部模型翻译为 Order 域的内部模型。<br>
+      你也可以点击订单卡片上的「查看 ACL 翻译」按钮来触发。
+    </div>
+    <div id="aclContent" class="hidden">
+
+      <!-- Step Indicator -->
+      <div class="step-indicator">
+        <div class="step s1" id="step1">
+          <span class="step-num">1</span>
+          调用 User Service API<br>获取 UserResponse
+        </div>
+        <div class="step s2" id="step2">
+          <span class="step-num">2</span>
+          ACL Translator 翻译<br>字段映射 + 结构重组
+        </div>
+        <div class="step s3" id="step3">
+          <span class="step-num">3</span>
+          输出 CustomerInfo<br>Order 域内部模型
+        </div>
+      </div>
+
+      <!-- Three-stage flow -->
+      <div class="acl-flow">
+        <!-- External -->
+        <div class="acl-stage external" id="stageExternal">
+          <h4>User Service API 响应 (UserResponse)</h4>
+          <div class="json-block" id="jsonExternal"></div>
+        </div>
+
+        <!-- Arrow 1 -->
+        <div class="acl-arrow">
+          <svg viewBox="0 0 40 40"><path d="M5 20 L30 20 M24 14 L30 20 L24 26" fill="none" stroke="#F59E0B" stroke-width="2.5" stroke-linecap="round"/></svg>
+        </div>
+
+        <!-- Translator -->
+        <div class="acl-stage translator" id="stageTranslator">
+          <h4>UserTranslator 翻译规则</h4>
+          <div id="translatorContent"></div>
+        </div>
+
+        <!-- Arrow 2 -->
+        <div class="acl-arrow">
+          <svg viewBox="0 0 40 40"><path d="M5 20 L30 20 M24 14 L30 20 L24 26" fill="none" stroke="#10B981" stroke-width="2.5" stroke-linecap="round"/></svg>
+        </div>
+
+        <!-- Internal -->
+        <div class="acl-stage internal" id="stageInternal">
+          <h4>Order 域内部模型 (CustomerInfo)</h4>
+          <div class="json-block" id="jsonInternal"></div>
+        </div>
+      </div>
+
+      <!-- Mapping Table -->
+      <div style="margin-top:20px;">
+        <h4 style="font-size:14px; margin-bottom:10px;">字段映射详情</h4>
+        <div class="legend">
+          <div class="legend-item"><div class="legend-color" style="background:#D1FAE5;"></div> KEEP 保持</div>
+          <div class="legend-item"><div class="legend-color" style="background:#FEF3C7;"></div> RENAME 语义对齐</div>
+          <div class="legend-item"><div class="legend-color" style="background:#DBEAFE;"></div> RESTRUCTURE 结构重组</div>
+          <div class="legend-item"><div class="legend-color" style="background:#FEE2E2;"></div> DROPPED 丢弃</div>
+        </div>
+        <table class="mapping-table" id="mappingTable">
+          <thead>
+            <tr><th>外部字段 (User Service)</th><th>外部值</th><th>操作</th><th>内部字段 (Order 域)</th><th>内部值</th><th>说明</th></tr>
+          </thead>
+          <tbody id="mappingBody"></tbody>
+        </table>
+      </div>
+
+      <!-- Annotations -->
+      <div class="annotation" id="aclAnnotation">
+        <strong>关键领悟：</strong>
+        Order 域的 <code>CustomerInfo</code> 和 User Service 的 <code>UserResponse</code> 是<strong>完全独立的两个模型</strong>。
+        即使 User Service 未来把 <code>username</code> 改成 <code>displayName</code>，Order 域的业务代码<strong>一行都不用改</strong>
+        — 只需修改 ACL 翻译层中的 <code>UserTranslator</code>。这就是防腐层的价值。
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Architecture Diagram -->
+<div class="section-title">架构总览：依赖方向与 ACL 位置</div>
+<div class="card">
+  <div class="card-body">
+    <div class="arch-diagram"><span class="hl-dim">// 两个微服务的完整交互流程（创建订单时）</span>
+
+<span class="hl-blue">┌─ User Service (Bounded Context 1) ──────────────────────┐</span>
+<span class="hl-blue">│                                                         │</span>
+<span class="hl-blue">│  interfaces/rest/UserController                         │</span>
+<span class="hl-blue">│       │  GET /api/users/{id}                            │</span>
+<span class="hl-blue">│       ▼                                                 │</span>
+<span class="hl-blue">│  application/UserApplicationService                     │</span>
+<span class="hl-blue">│       │                                                 │</span>
+<span class="hl-blue">│       ▼                                                 │</span>
+<span class="hl-blue">│  domain/model/User (聚合根)                              │</span>
+<span class="hl-blue">│       │  name, email, Address                           │</span>
+<span class="hl-blue">│       ▼                                                 │</span>
+<span class="hl-blue">│  → 返回 UserResponse DTO (外部合同)                      │</span>
+<span class="hl-blue">│    { userId, <span class="hl-amber">username</span>, email, street, city, ...          │</span>
+<span class="hl-blue">│      <span class="hl-red">registeredAt</span> }                                     │</span>
+<span class="hl-blue">└─────────────────────────────────────────────────────────┘</span>
+              │
+              │ HTTP GET (JSON)
+              ▼
+<span class="hl-green">┌─ Order Service (Bounded Context 2) ─────────────────────┐</span>
+<span class="hl-green">│                                                         │</span>
+<span class="hl-green">│  interfaces/rest/OrderController                        │</span>
+<span class="hl-green">│       │  POST /api/orders                               │</span>
+<span class="hl-green">│       ▼                                                 │</span>
+<span class="hl-green">│  application/OrderApplicationService                    │</span>
+<span class="hl-green">│       │                                                 │</span>
+<span class="hl-green">│       │ 依赖 UserServicePort (端口接口, 在 application 层) │</span>
+<span class="hl-green">│       │                                                 │</span>
+<span class="hl-green">│       ▼</span>
+<span class="hl-amber">│  ┌─ infrastructure/acl/ (防腐层) ────────────────────┐</span>
+<span class="hl-amber">│  │                                                    │</span>
+<span class="hl-amber">│  │  UserServiceAdapter (实现 UserServicePort)          │</span>
+<span class="hl-amber">│  │       │                                            │</span>
+<span class="hl-amber">│  │       ├─→ FeignClient → HTTP → User Service        │</span>
+<span class="hl-amber">│  │       │       返回 ExternalUserDTO (外部镜像)        │</span>
+<span class="hl-amber">│  │       │                                            │</span>
+<span class="hl-amber">│  │       └─→ UserTranslator                           │</span>
+<span class="hl-amber">│  │               <span class="hl-amber">username</span> → <span class="hl-green">customerName</span>  (语义对齐)  │</span>
+<span class="hl-amber">│  │               扁平地址  → <span class="hl-green">CustomerAddress</span> (结构重组)│</span>
+<span class="hl-amber">│  │               <span class="hl-red">registeredAt → 丢弃</span>      (选择投影)│</span>
+<span class="hl-amber">│  │               FeignException → <span class="hl-green">ExternalServiceEx</span>   │</span>
+<span class="hl-amber">│  │                                                    │</span>
+<span class="hl-amber">│  │       输出: CustomerInfo (领域值对象)                │</span>
+<span class="hl-amber">│  └────────────────────────────────────────────────────┘</span>
+<span class="hl-green">│       │</span>
+<span class="hl-green">│       ▼</span>
+<span class="hl-green">│  domain/model/Order.create(customerInfo, items)</span>
+<span class="hl-green">│       │  Order 聚合根只知道 CustomerInfo，</span>
+<span class="hl-green">│       │  对 User Service 的存在一无所知</span>
+<span class="hl-green">│       ▼</span>
+<span class="hl-green">│  domain/repository/OrderRepository.save(order)</span>
+<span class="hl-green">│                                                         │</span>
+<span class="hl-green">└─────────────────────────────────────────────────────────┘</span></div>
+  </div>
+</div>
+
+<!-- Key Concepts -->
+<div class="section-title">DDD 核心概念速查</div>
+<div class="contexts">
+  <div class="card">
+    <div class="card-body">
+      <h4 style="margin-bottom:10px;">限界上下文 (Bounded Context)</h4>
+      <p style="font-size:13px; color:var(--gray);">
+        每个微服务是一个限界上下文，有自己的<strong>通用语言</strong>。User Service 里叫 "username"，Order Service 里叫 "customerName" — 两个上下文对同一概念有不同的命名和理解。ACL 负责在边界处翻译。
+      </p>
+      <h4 style="margin:14px 0 10px;">值对象快照 (Value Object Snapshot)</h4>
+      <p style="font-size:13px; color:var(--gray);">
+        <code>CustomerInfo</code> 是下单时刻客户信息的<strong>快照</strong>，不是引用。用户之后改名，订单里的名字不会变。这保证了订单数据的历史一致性。
+      </p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-body">
+      <h4 style="margin-bottom:10px;">依赖倒置原则 (DIP)</h4>
+      <p style="font-size:13px; color:var(--gray);">
+        <code>UserServicePort</code> 定义在 <strong>application 层</strong>（高层定义接口），<code>UserServiceAdapter</code> 在 <strong>infrastructure 层</strong>实现它（低层实现接口）。依赖方向始终向内指。
+      </p>
+      <h4 style="margin:14px 0 10px;">六边形架构 (Hexagonal Architecture)</h4>
+      <p style="font-size:13px; color:var(--gray);">
+        <code>UserServicePort</code> 是出站端口，<code>UserServiceAdapter</code> 是出站适配器。如果未来从 REST 换成 gRPC，只需换适配器，端口和业务逻辑不变。
+      </p>
+    </div>
+  </div>
+</div>
+
+</div><!-- /main -->
+
+<script>
+const USER_API = 'http://localhost:8082/api/users';
+const ORDER_API = 'http://localhost:8081/api/orders';
+const ACL_DEBUG_API = 'http://localhost:8081/api/debug/acl';
+
+let users = [];
+let orders = [];
+
+// ----- Health Check -----
+async function checkHealth() {
+  const check = async (url, dotId) => {
+    try {
+      const r = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(2000) });
+      document.getElementById(dotId).className = 'status-dot ok';
+    } catch {
+      document.getElementById(dotId).className = 'status-dot err';
+    }
+  };
+  // Use a likely-existing endpoint or just test connectivity
+  check(USER_API + '/health-check-404', 'userStatus').catch(() => {});
+  check(ORDER_API + '/health-check-404', 'orderStatus').catch(() => {});
+}
+
+// Smarter health check: 404 also means service is up
+async function checkService(url, dotId) {
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(2000) });
+    document.getElementById(dotId).className = 'status-dot ok';
+  } catch (e) {
+    if (e.name === 'TypeError') {
+      // Network error = service down
+      document.getElementById(dotId).className = 'status-dot err';
+    } else {
+      // Timeout or other = might be up
+      document.getElementById(dotId).className = 'status-dot err';
+    }
+  }
+}
+
+async function checkServices() {
+  // Try fetching a non-existent user — 404 = service is up
+  try {
+    await fetch(USER_API + '/nonexistent', { signal: AbortSignal.timeout(2000) });
+    document.getElementById('userStatus').className = 'status-dot ok';
+  } catch(e) {
+    document.getElementById('userStatus').className = 'status-dot err';
+  }
+  try {
+    await fetch(ORDER_API + '/nonexistent', { signal: AbortSignal.timeout(2000) });
+    document.getElementById('orderStatus').className = 'status-dot ok';
+  } catch(e) {
+    document.getElementById('orderStatus').className = 'status-dot err';
+  }
+}
+checkServices();
+setInterval(checkServices, 10000);
+
+// ----- Toast -----
+function toast(msg, type = 'success') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// ----- Create User -----
+async function createUser() {
+  const body = {
+    name: document.getElementById('userName').value,
+    email: document.getElementById('userEmail').value,
+    street: document.getElementById('userStreet').value,
+    city: document.getElementById('userCity').value,
+    province: document.getElementById('userProvince').value,
+    zipCode: document.getElementById('userZip').value,
+    country: document.getElementById('userCountry').value,
+  };
+  try {
+    const res = await fetch(USER_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const user = await res.json();
+    users.push(user);
+    renderUsers();
+    updateCustomerSelect();
+    toast('用户创建成功: ' + user.username);
+    // Change email for next creation
+    document.getElementById('userEmail').value = 'user' + Date.now() + '@example.com';
+  } catch (e) {
+    toast('创建失败: ' + e.message, 'error');
+  }
+}
+
+function renderUsers() {
+  const el = document.getElementById('userList');
+  if (users.length === 0) {
+    el.innerHTML = '<div class="list-empty">暂无用户，请先创建</div>';
+    return;
+  }
+  el.innerHTML = users.map(u => `
+    <div class="list-item fade-in">
+      <div class="name">${u.username}</div>
+      <div class="meta">
+        ID: <code>${u.userId}</code><br>
+        Email: ${u.email} | 地址: ${u.city}, ${u.country}<br>
+        <span style="color:#9CA3AF">registeredAt: ${u.registeredAt}</span>
+      </div>
+      <div style="margin-top:6px; font-size:11px; color:var(--blue);">
+        User Service 内部模型字段: name=${u.username}, email, Address(street, city, province, zipCode, country)
+      </div>
+    </div>
+  `).join('');
+}
+
+function updateCustomerSelect() {
+  const sel = document.getElementById('orderCustomer');
+  sel.innerHTML = '<option value="">-- 选择客户 --</option>' +
+    users.map(u => `<option value="${u.userId}">${u.username} (${u.userId.substring(0, 8)}...)</option>`).join('');
+}
+
+// ----- Create Order -----
+async function createOrder() {
+  const customerId = document.getElementById('orderCustomer').value;
+  if (!customerId) { toast('请先选择客户', 'error'); return; }
+
+  const body = {
+    customerId,
+    items: [{
+      productId: document.getElementById('prodId').value,
+      productName: document.getElementById('prodName').value,
+      price: parseFloat(document.getElementById('prodPrice').value),
+      quantity: parseInt(document.getElementById('prodQty').value),
+    }]
+  };
+
+  try {
+    const res = await fetch(ORDER_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error('HTTP ' + res.status + ': ' + errText);
+    }
+    const order = await res.json();
+    orders.push(order);
+    renderOrders();
+    toast('订单创建成功！ACL 翻译已完成');
+
+    // Auto-show ACL translation
+    showAclTranslation(customerId);
+  } catch (e) {
+    toast('创建订单失败: ' + e.message, 'error');
+  }
+}
+
+function renderOrders() {
+  const el = document.getElementById('orderList');
+  if (orders.length === 0) {
+    el.innerHTML = '<div class="list-empty">暂无订单</div>';
+    return;
+  }
+  el.innerHTML = orders.map(o => `
+    <div class="list-item fade-in">
+      <div class="name">Order #${o.orderId.substring(0, 8)}...</div>
+      <div class="meta">
+        客户: <strong>${o.customerName}</strong> (${o.customerId.substring(0, 8)}...)<br>
+        商品: ${o.items.map(i => i.productName + ' x' + i.quantity).join(', ')}<br>
+        总额: <strong>¥${o.totalAmount}</strong> | 状态: <strong>${o.status}</strong>
+      </div>
+      <div style="margin-top:6px; font-size:11px; color:var(--green);">
+        Order 域内部: customerName="${o.customerName}" (不是 username!)
+      </div>
+      <div class="actions">
+        <button class="btn btn-amber btn-sm" onclick="showAclTranslation('${o.customerId}')">查看 ACL 翻译</button>
+        ${o.status === '待支付' ? `<button class="btn btn-green btn-sm" onclick="payOrder('${o.orderId}')">支付</button>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+// ----- Pay Order -----
+async function payOrder(orderId) {
+  try {
+    const res = await fetch(ORDER_API + '/' + orderId + '/pay', { method: 'POST' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const updated = await res.json();
+    const idx = orders.findIndex(o => o.orderId === orderId);
+    if (idx >= 0) orders[idx] = updated;
+    renderOrders();
+    toast('支付成功！状态: ' + updated.status);
+  } catch (e) {
+    toast('支付失败: ' + e.message, 'error');
+  }
+}
+
+// ----- ACL Translation Visualizer -----
+async function showAclTranslation(userId) {
+  try {
+    const res = await fetch(ACL_DEBUG_API + '/translate/' + userId);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+
+    document.getElementById('aclEmpty').classList.add('hidden');
+    document.getElementById('aclContent').classList.remove('hidden');
+
+    // Animate steps
+    animateSteps(data);
+
+    // Scroll to ACL section
+    document.getElementById('aclSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) {
+    toast('获取 ACL 翻译数据失败: ' + e.message, 'error');
+  }
+}
+
+async function animateSteps(data) {
+  const s1 = document.getElementById('step1');
+  const s2 = document.getElementById('step2');
+  const s3 = document.getElementById('step3');
+
+  // Reset
+  [s1, s2, s3].forEach(s => s.classList.remove('active'));
+
+  // Step 1: External API Response
+  s1.classList.add('active');
+  renderExternalJson(data.step1_externalApiResponse);
+  await sleep(600);
+
+  // Step 2: Translation
+  s2.classList.add('active');
+  renderTranslator(data.step2_fieldMappings);
+  renderMappingTable(data.step2_fieldMappings);
+  await sleep(600);
+
+  // Step 3: Internal Model
+  s3.classList.add('active');
+  renderInternalJson(data.step3_domainModel);
+}
+
+function renderExternalJson(obj) {
+  const el = document.getElementById('jsonExternal');
+  let html = '<span class="hl-dim">// User Service 返回的原始 JSON</span>\n';
+  html += '<span class="hl-dim">// 这是外部世界的模型</span>\n{\n';
+  const entries = Object.entries(obj);
+  entries.forEach(([k, v], i) => {
+    let cls = 'field-keep';
+    if (k === 'username') cls = 'field-rename';
+    if (['street','city','province','zipCode','country'].includes(k)) cls = 'field-restructure';
+    if (k === 'registeredAt') cls = 'field-dropped';
+    const comma = i < entries.length - 1 ? ',' : '';
+    const val = v === null ? '<span class="json-null">null</span>' : `<span class="json-str">"${v}"</span>`;
+    html += `  <span class="${cls}"><span class="json-key">"${k}"</span>: ${val}${comma}</span>\n`;
+  });
+  html += '}';
+  el.innerHTML = html;
+}
+
+function renderInternalJson(obj) {
+  const el = document.getElementById('jsonInternal');
+  let html = '<span class="hl-dim">// Order 域的 CustomerInfo 值对象</span>\n';
+  html += '<span class="hl-dim">// 这是内部世界的模型</span>\n{\n';
+
+  html += `  <span class="field-keep"><span class="json-key">"customerId"</span>: <span class="json-str">"${obj.customerId}"</span>,</span>\n`;
+  html += `  <span class="field-rename"><span class="json-key">"customerName"</span>: <span class="json-str">"${obj.customerName}"</span>,</span>\n`;
+  html += `  <span class="field-keep"><span class="json-key">"email"</span>: <span class="json-str">"${obj.email}"</span>,</span>\n`;
+  html += `  <span class="field-restructure"><span class="json-key">"defaultAddress"</span>: {</span>\n`;
+  const addr = obj.defaultAddress;
+  const aKeys = Object.keys(addr);
+  aKeys.forEach((k, i) => {
+    const comma = i < aKeys.length - 1 ? ',' : '';
+    html += `    <span class="field-restructure"><span class="json-key">"${k}"</span>: <span class="json-str">"${addr[k]}"</span>${comma}</span>\n`;
+  });
+  html += '  <span class="field-restructure">}</span>\n';
+  html += '}\n';
+  html += '<span class="hl-dim">// 注意：没有 registeredAt（被丢弃）</span>\n';
+  html += '<span class="hl-dim">// 注意：username → customerName（语义对齐）</span>\n';
+  html += '<span class="hl-dim">// 注意：地址变成了结构化的值对象</span>';
+  el.innerHTML = html;
+}
+
+function renderTranslator(mappings) {
+  const el = document.getElementById('translatorContent');
+  let html = '<div style="font-size:11px; line-height:1.8;">';
+  mappings.forEach(m => {
+    let icon, color;
+    switch(m.type) {
+      case 'KEEP': icon = '='; color = 'var(--green)'; break;
+      case 'RENAME': icon = '~'; color = 'var(--amber)'; break;
+      case 'RESTRUCTURE': icon = '{..}'; color = 'var(--blue)'; break;
+      case 'DROPPED': icon = 'x'; color = 'var(--red)'; break;
+    }
+    html += `<div style="margin:4px 0; padding:3px 6px; border-radius:4px; background:rgba(0,0,0,0.04);">`;
+    html += `<span class="mapping-type type-${m.type}">${m.type}</span> `;
+    html += `<span style="color:${color}; font-family:monospace;">${m.from}</span>`;
+    if (m.type !== 'DROPPED') {
+      html += ` <span style="color:#9CA3AF;">→</span> <span style="font-family:monospace;">${m.to}</span>`;
+    } else {
+      html += ` <span style="color:var(--red);">→ 丢弃</span>`;
+    }
+    html += `</div>`;
+  });
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function renderMappingTable(mappings) {
+  const tbody = document.getElementById('mappingBody');
+  tbody.innerHTML = mappings.map(m => `
+    <tr>
+      <td><code>${m.from}</code></td>
+      <td style="font-size:11px; max-width:150px; word-break:break-all;">${m.fromValue}</td>
+      <td><span class="mapping-type type-${m.type}">${m.type}</span></td>
+      <td><code>${m.to}</code></td>
+      <td style="font-size:11px; max-width:150px; word-break:break-all;">${m.type === 'DROPPED' ? '<span style="color:var(--red)">N/A</span>' : m.toValue}</td>
+      <td style="font-size:11px; color:var(--gray);">${m.description}</td>
+    </tr>
+  `).join('');
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+com/example/userservice/infrastructure/persistence/UserRepositoryImpl.class
+com/example/userservice/UserServiceApplication.class
+com/example/userservice/infrastructure/config/CorsConfig.class
+com/example/userservice/infrastructure/persistence/UserJpaEntity.class
+com/example/userservice/domain/model/UserId.class
+com/example/userservice/domain/repository/UserRepository.class
+com/example/userservice/infrastructure/persistence/AddressEmbeddable.class
+com/example/userservice/interfaces/rest/dto/CreateUserRequest.class
+com/example/userservice/application/CreateUserCommand.class
+com/example/userservice/domain/event/UserRegisteredEvent.class
+com/example/userservice/interfaces/rest/UserController.class
+com/example/userservice/interfaces/rest/dto/UserResponse.class
+com/example/userservice/domain/model/User.class
+com/example/userservice/application/UserApplicationService.class
+com/example/userservice/infrastructure/persistence/UserPersistenceMapper.class
+com/example/userservice/domain/model/Address.class
+com/example/userservice/infrastructure/persistence/UserJpaRepository.class
