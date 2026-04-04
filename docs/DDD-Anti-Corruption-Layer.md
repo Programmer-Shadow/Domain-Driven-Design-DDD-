@@ -118,6 +118,168 @@ public class Order {
 | **CustomerAddress** | `domain/model/` | 内部地址值对象 | `CustomerAddress.java` |
 | **ExternalServiceException** | `infrastructure/acl/` | 异常翻译（防止框架异常外泄） | `ExternalServiceException.java` |
 
+
+
+### 3.3 ACL 的四层架构
+
+### 第 1 层：端口接口（Port）
+
+```java
+// UserServicePort.java
+
+public interface UserServicePort {
+    Optional<CustomerInfo> findCustomerById(String userId);
+}
+```
+
+**关键特点**：
+
+- 返回 **内部领域对象**（CustomerInfo），不是外部 DTO
+- 对外部实现细节（Feign、HTTP）一无所知
+
+### 第 2 层：客户端（Client）
+
+```java
+// UserServiceFeignClient.java
+// 位置：infrastructure/acl/userservice/client/
+
+@FeignClient(name = "user-service", url = "${acl.user-service.base-url}")
+public interface UserServiceFeignClient {
+    @GetMapping("/api/users/{userId}")
+    ExternalUserDTO getUserById(@PathVariable("userId") String userId);
+}
+```
+
+**职责**：
+
+- 纯技术通道，只负责 HTTP 通信
+- 返回原始的外部 DTO（ExternalUserDTO）
+- 无任何业务语义
+
+**特点**：
+
+- 完全隔离在 `infrastructure/acl` 包内
+- 其他包看不见 Feign、HTTP、外部 DTO
+- 如果外部 API 改为 gRPC，只需修改这一个类
+
+### 第 3 层：翻译器（Translator）
+
+```java
+// UserTranslator.java
+// 位置：infrastructure/acl/userservice/translator/
+
+@Component
+public class UserTranslator {
+
+    public CustomerInfo toCustomerInfo(ExternalUserDTO externalDTO) {
+        // 翻译点 1：字段语义对齐
+        String customerName = externalDTO.username();  // 外部：username → 内部：customerName
+
+        // 翻译点 2：结构重组
+        CustomerAddress shippingAddress = new CustomerAddress(
+            externalDTO.street(),
+            externalDTO.city(),
+            // 扁平的地址字段 → 值对象
+        );
+
+        // 翻译点 3：选择性映射
+        return new CustomerInfo(
+            externalDTO.userId(),
+            customerName,
+            externalDTO.email(),
+            shippingAddress
+            // 注意：registeredAt 不映射，Order 业务不需要
+        );
+    }
+}
+```
+
+**核心职责**：
+1. **字段语义对齐**：外部术语 → 本领域术语
+   ```
+   外部：username    →   内部：customerName
+   外部：city        →   内部：city
+   外部：registeredAt →  （不映射，Order 不关心）
+   ```
+
+2. **结构重组**：扁平结构 → 值对象
+   ```
+   外部（扁平）：
+   {
+     street: "...",
+     city: "...",
+     province: "...",
+     zipCode: "...",
+     country: "..."
+   }
+   
+   内部（值对象）：
+   new CustomerAddress(street, city, province, zipCode, country)
+   ```
+
+3. **数据清洗**：处理 null、格式转换
+   ```java
+   String city = externalDTO.city() != null ?
+       externalDTO.city() : "Unknown";
+   ```
+
+4. **选择性映射**：只映射本领域需要的字段
+   ```
+   不映射：registeredAt（User 业务，Order 不需要）
+   ```
+
+**为什么需要翻译器**：
+- 外部 DTO 结构可能不适合本领域使用
+- 外部字段名可能与本领域语言不一致
+- 外部可能有很多本领域用不到的字段
+- 如果外部 API 新增字段，翻译器可以选择忽略
+
+### 第 4 层：适配器（Adapter）
+
+```java
+// UserServiceAdapter.java
+// 位置：infrastructure/acl/userservice/adapter/
+
+@Component
+public class UserServiceAdapter implements UserServicePort {
+
+    private final UserServiceFeignClient feignClient;
+    private final UserTranslator translator;
+
+    @Override
+    public Optional<CustomerInfo> findCustomerById(String userId) {
+        try {
+            // 1. 调用 Client（HTTP）获取外部 DTO
+            ExternalUserDTO externalUser = feignClient.getUserById(userId);
+
+            // 2. 通过 Translator 转换为内部对象
+            CustomerInfo customerInfo = translator.toCustomerInfo(externalUser);
+
+            return Optional.of(customerInfo);
+
+        } catch (FeignException.NotFound e) {
+            // 3. 异常转换：404 → Optional.empty()
+            // 外部返回用户不存在 → 内部理解为"查询结果为空"
+            return Optional.empty();
+
+        } catch (FeignException e) {
+            // 4. 异常转换：技术异常 → 领域异常
+            // 不能让 FeignException 泄露到 domain 层
+            throw new ExternalServiceException(
+                "Unable to retrieve customer information.",
+                e
+            );
+        }
+    }
+}
+```
+
+**核心职责**：
+1. **协调**：组织 Client 和 Translator 的调用顺序
+2. **异常处理**：转换框架异常为领域可理解的结果
+3. **实现 Port**：是 Port 接口的唯一实现
+
+
 ---
 
 ## 四、ACL 的五大翻译机制（结合代码）

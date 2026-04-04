@@ -188,8 +188,8 @@ public static User create(String name, String email, Address address) {
 
 **为什么用工厂方法 `create()` 而不是 `new User()`？**
 
-- todo构造器是 private 的，外部无法绕过工厂方法
-- todo**工厂方法**里做了：校验邮箱 → 生成ID → 设置时间 → **触发领域事件**
+- 构造器是 private 的，外部无法绕过工厂方法
+- **工厂方法**里做了：校验邮箱 → 生成ID → 设置时间 → **触发领域事件**
 - 这些是创建用户时的**业务不变量**，不能被跳过
 
 此刻内存中的对象结构：
